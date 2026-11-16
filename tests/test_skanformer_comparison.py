@@ -210,3 +210,39 @@ def test_compare_models_smoke_end_to_end(tmp_path):
         assert os.path.isfile(tmp_path / "gcd" / f"{model}-seed0" / "checkpoint.pth")
     summary = (tmp_path / "results" / "summary.csv").read_text()
     assert "transformer" in summary and "skanformer" in summary
+
+
+# ----------------------------------------------------------------------------
+# NaN guard in Trainer.optimize and the (modernised) Adam
+# ----------------------------------------------------------------------------
+def _fake_trainer(model, params):
+    from types import SimpleNamespace
+    from src.trainer import Trainer
+    from src.optim import get_optimizer
+    t = SimpleNamespace(params=params, optimizer=get_optimizer(list(model.parameters()), params.optimizer),
+                        parameters={"model": list(model.parameters())}, n_iter=0)
+    t._skip_nonfinite_step = lambda opt, what: Trainer._skip_nonfinite_step(t, opt, what)
+    return t, (lambda loss: Trainer.optimize(t, loss))
+
+
+def test_nan_loss_is_skipped_and_weights_stay_finite():
+    _, params = small_params()
+    model = torch.nn.Linear(4, 3)
+    t, optimize = _fake_trainer(model, params)
+    before = [p.detach().clone() for p in model.parameters()]
+    optimize((model(torch.randn(2, 4)) * float("nan")).sum())
+    assert all(torch.equal(a, b) for a, b in zip(before, model.parameters()))
+    assert t.n_nonfinite == 1
+    # a normal step updates the weights (Adam with keyword-form ops) and resets the counter
+    optimize(model(torch.randn(2, 4)).pow(2).sum())
+    assert not all(torch.equal(a, b) for a, b in zip(before, model.parameters()))
+    assert all(torch.isfinite(p).all() for p in model.parameters()) and t.n_nonfinite == 0
+
+
+def test_repeated_nan_stops_training():
+    _, params = small_params()
+    model = torch.nn.Linear(4, 3)
+    _, optimize = _fake_trainer(model, params)
+    with pytest.raises(RuntimeError, match="diagnose_nan"):
+        for _ in range(60):
+            optimize(model(torch.full((1, 4), float("nan"))).sum())

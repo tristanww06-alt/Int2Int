@@ -177,27 +177,46 @@ class Trainer(object):
         # mod_names = sorted(self.modules.keys()) # unused
         self.scaler = torch.cuda.amp.GradScaler()
 
+    def _skip_nonfinite_step(self, optimizer, what):
+        optimizer.zero_grad()
+        self.n_nonfinite = getattr(self, "n_nonfinite", 0) + 1
+        self.n_nonfinite_total = getattr(self, "n_nonfinite_total", 0) + 1
+        logger.warning(f"NaN/inf {what} detected: optimization step skipped "
+                       f"({self.n_nonfinite} in a row, {self.n_nonfinite_total} in total)")
+        if self.n_nonfinite >= 50:
+            raise RuntimeError(
+                f"Non-finite {what} for 50 consecutive steps. The model weights are fine (no NaN update "
+                "was applied) but the forward/backward pass keeps producing NaN. Run "
+                "`python experiments/diagnose_nan.py` (with the same arguments as this run) "
+                "to find which layer produces it."
+            )
+
     def optimize(self, loss):
         """
         Optimize.
         """
-        # check NaN
-        if (loss != loss).data.any():
-            logger.warning("NaN detected")
-            # exit()
-
         params = self.params
 
         # optimizer
         optimizer = self.optimizer
 
+        # check NaN: never apply a non-finite update (it would turn every weight
+        # into NaN and ruin the rest of the run); stop if it keeps happening
+        if not torch.isfinite(loss).all():
+            self._skip_nonfinite_step(optimizer, "loss")
+            return
+
         # regular optimization
         if params.amp == -1:
             optimizer.zero_grad()
             loss.backward()
-            if params.clip_grad_norm > 0:
-                clip_grad_norm_(self.parameters["model"], params.clip_grad_norm)
+            grad_norm = clip_grad_norm_(self.parameters["model"],
+                                        params.clip_grad_norm if params.clip_grad_norm > 0 else float("inf"))
+            if not torch.isfinite(grad_norm):
+                self._skip_nonfinite_step(optimizer, "gradient")
+                return
             optimizer.step()
+            self.n_nonfinite = 0
 
         else:
             if params.accumulate_gradients > 1:
