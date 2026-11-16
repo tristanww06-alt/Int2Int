@@ -177,7 +177,78 @@ class Trainer(object):
         # mod_names = sorted(self.modules.keys()) # unused
         self.scaler = torch.cuda.amp.GradScaler()
 
+    def _nan_report(self, what):
+        """
+        One-off detailed report at the first non-finite loss/gradient of a run:
+        which weights/gradients are bad, which layer first outputs NaN on the
+        offending batch, and whether the same batch + weights give NaN on CPU.
+        The batch is saved to <dump_path>/nan_batch.pt.
+        """
+        import copy
+        L = lambda m: logger.warning("[NaN report] " + m)
+        try:
+            L(f"first non-finite {what} at iteration {self.n_total_iter} "
+              f"(torch {torch.__version__}, cuda {torch.version.cuda})")
+            named = [(f"{mn}.{n}", p) for mn, mod in self.modules.items() for n, p in mod.named_parameters()]
+            bad_w = [n for n, p in named if not torch.isfinite(p).all()]
+            bad_g = [n for n, p in named if p.grad is not None and not torch.isfinite(p.grad).all()]
+            L(f"non-finite weights: {len(bad_w)} {bad_w[:8]}")
+            L(f"non-finite gradients: {len(bad_g)} {bad_g[:8]}")
+            if getattr(self, "_last_batch", None) is None or self.params.architecture != "encoder_decoder" \
+                    or self.params.lstm:
+                return
+            x1, len1, x2, len2 = self._last_batch
+            L(f"batch: x1 {tuple(x1.shape)} len1 [{len1.min().item()}, {len1.max().item()}] "
+              f"x2 {tuple(x2.shape)} len2 [{len2.min().item()}, {len2.max().item()}] "
+              f"token ids [{min(x1.min().item(), x2.min().item())}, {max(x1.max().item(), x2.max().item())}] "
+              f"vocab {self.params.n_words}")
+            path = os.path.join(self.params.dump_path, "nan_batch.pt")
+            torch.save({"x1": x1.cpu(), "len1": len1.cpu(), "x2": x2.cpu(), "len2": len2.cpu()}, path)
+            L(f"batch saved to {path}")
+
+            def fwd(enc, dec, b):
+                x1, len1, x2, len2 = b
+                alen = torch.arange(len2.max(), dtype=torch.long, device=len2.device)
+                pred_mask = alen[:, None] < len2[None] - 1
+                y = x2[1:].masked_select(pred_mask[:-1])
+                e = enc("fwd", x=x1, lengths=len1, causal=False)
+                d = dec("fwd", x=x2, lengths=len2, causal=True, src_enc=e.transpose(0, 1), src_len=len1)
+                return dec("predict", tensor=d, pred_mask=pred_mask, y=y, get_scores=False)[1]
+
+            enc, dec = self.modules["encoder"], self.modules["decoder"]
+            first, handles = [], []
+            for mn, mod in (("encoder", enc), ("decoder", dec)):
+                for n, sub in mod.named_modules():
+                    def hook(m, i, o, name=f"{mn}.{n}" if n else mn):
+                        if not first and torch.is_tensor(o) and o.is_floating_point() and not torch.isfinite(o).all():
+                            bad_in = any(torch.is_tensor(t) and t.is_floating_point() and not torch.isfinite(t).all()
+                                         for t in i)
+                            first.append(f"{name} ({type(m).__name__})" + (" [input already bad]" if bad_in else ""))
+                    handles.append(sub.register_forward_hook(hook))
+            with torch.no_grad():
+                try:
+                    loss_dev = fwd(enc, dec, self._last_batch).item()
+                finally:
+                    for h in handles:
+                        h.remove()
+                L(f"re-run on {x1.device}: loss {loss_dev} | first non-finite layer output: "
+                  f"{first[0] if first else 'none'}")
+                if x1.is_cuda:
+                    import src.utils
+                    enc_c, dec_c = copy.deepcopy(enc).cpu(), copy.deepcopy(dec).cpu()
+                    src.utils.CUDA = False
+                    try:
+                        loss_cpu = fwd(enc_c, dec_c, [t.cpu() for t in self._last_batch]).item()
+                    finally:
+                        src.utils.CUDA = True
+                    L(f"same batch and weights on CPU: loss {loss_cpu}")
+            enc.train(), dec.train()
+        except Exception as e:  # never let the report itself crash training
+            L(f"report failed: {type(e).__name__}: {e}")
+
     def _skip_nonfinite_step(self, optimizer, what):
+        if getattr(self, "n_nonfinite_total", 0) == 0 and hasattr(self, "modules"):
+            self._nan_report(what)
         optimizer.zero_grad()
         self.n_nonfinite = getattr(self, "n_nonfinite", 0) + 1
         self.n_nonfinite_total = getattr(self, "n_nonfinite_total", 0) + 1
@@ -473,6 +544,7 @@ class Trainer(object):
             (x1, len1), (x2, len2), _ = self.get_batch(task)
             # cuda
             x1, len1, x2, len2 = to_cuda(x1, len1, x2, len2)
+            self._last_batch = (x1, len1, x2, len2)  # for the NaN report
 
         # target words to predict
         if params.architecture != "encoder_only":

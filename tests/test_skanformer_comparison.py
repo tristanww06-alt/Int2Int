@@ -246,3 +246,23 @@ def test_repeated_nan_stops_training():
     with pytest.raises(RuntimeError, match="diagnose_nan"):
         for _ in range(60):
             optimize(model(torch.full((1, 4), float("nan"))).sum())
+
+
+def test_nan_report_pinpoints_the_layer(tmp_path, caplog):
+    from types import SimpleNamespace
+    from src.trainer import Trainer
+    env, params = small_params(dump_path=str(tmp_path))
+    enc, dec = build(skanformer, env, params)
+    with torch.no_grad():
+        dec.layers[1].ffn.lin1.weight[0, 0] = float("nan")   # break one weight
+    (x, xl), (y, yl) = batch(env)
+    t = SimpleNamespace(modules={"encoder": enc, "decoder": dec}, params=params,
+                        n_total_iter=7, _last_batch=(x, xl, y, yl))
+    with caplog.at_level("WARNING"):
+        Trainer._nan_report(t, "loss")
+    log = caplog.text
+    assert "iteration 7" in log
+    assert "decoder.layers.1.ffn.lin1.weight" in log                       # bad weight named
+    assert "first non-finite layer output: decoder.layers.1.ffn" in log    # culprit layer
+    assert os.path.isfile(tmp_path / "nan_batch.pt")
+    assert "report failed" not in log

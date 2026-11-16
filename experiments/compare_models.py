@@ -194,6 +194,7 @@ def main():
         common += ["--cpu", "true", "--num_workers", "0"]
 
     status = []
+    consecutive_failures = 0
     for task in tasks:
         task_args, err = prepare_task(task, args, preset, extra)
         if err:
@@ -227,9 +228,13 @@ def main():
                     msg = f"FAILED (exit code {ret}, see {log_path})"
                     print(f"[error] {task}/{exp_id}: {msg}")
                     status.append((task, model, seed, msg))
-                    if args.stop_on_error:
-                        sys.exit(ret)
+                    consecutive_failures += 1
+                    if args.stop_on_error or consecutive_failures >= 2:
+                        print("\n[stop] two runs in a row failed: probably not specific to one run. "
+                              "Fix the error above, then re-run the same command (finished runs are kept).")
+                        sys.exit(ret or 1)
                 else:
+                    consecutive_failures = 0
                     status.append((task, model, seed, f"trained in {dt:.1f} min"))
 
     print("\n=========== summary of runs ===========")
