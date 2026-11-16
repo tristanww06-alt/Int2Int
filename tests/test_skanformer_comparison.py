@@ -200,6 +200,7 @@ def test_analyze_results_parses_logs(tmp_path):
 # ----------------------------------------------------------------------------
 @pytest.mark.slow
 def test_compare_models_smoke_end_to_end(tmp_path):
+    tmp_path = tmp_path / "dir with spaces"  # e.g. "LLMs From Scratch" on Windows
     cmd = [sys.executable, os.path.join(ROOT, "experiments", "compare_models.py"),
            "--preset", "smoke", "--cpu", "--max_epoch", "1", "--tasks", "gcd",
            "--models", "transformer,skanformer", "--dump_path", str(tmp_path)]

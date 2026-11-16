@@ -97,7 +97,7 @@ def get_dump_path(params):
     # create the sweep path if it does not exist
     sweep_path = os.path.join(params.dump_path, params.exp_name)
     if not os.path.exists(sweep_path):
-        subprocess.Popen("mkdir -p %s" % sweep_path, shell=True).wait()
+        os.makedirs(sweep_path, exist_ok=True)  # portable (Windows, paths with spaces)
 
     # create an ID for the job if it is not given in the parameters.
     # if we run on the cluster, the job ID is the one of Chronos.
@@ -120,7 +120,7 @@ def get_dump_path(params):
     # create the dump folder / update parameters
     params.dump_path = os.path.join(sweep_path, params.exp_id)
     if not os.path.isdir(params.dump_path):
-        subprocess.Popen("mkdir -p %s" % params.dump_path, shell=True).wait()
+        os.makedirs(params.dump_path, exist_ok=True)
 
 
 def to_cuda(*args):
