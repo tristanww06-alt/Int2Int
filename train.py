@@ -165,6 +165,8 @@ def get_parser():
                         help="Use AMP wrapper for float16 / distributed / gradient accumulation. Level of optimization. -1 to disable.")
     parser.add_argument("--num_workers", type=int, default=1,
                         help="Number of CPU workers for DataLoader")
+    parser.add_argument("--seed", type=int, default=-1,
+                        help="Seed for python / numpy / torch (model initialisation). -1 to disable")
     parser.add_argument("--env_base_seed", type=int, default=-1,
                         help="Base seed for environments (-1 to use timestamp seed)")
 
@@ -279,6 +281,14 @@ def main(params):
     else:
         assert torch.cuda.is_available()
     src.utils.CUDA = not params.cpu
+
+    # reproducible model initialisation (used by experiments/compare_models.py)
+    if params.seed >= 0:
+        random.seed(params.seed)
+        np.random.seed(params.seed)
+        torch.manual_seed(params.seed)
+        if not params.cpu:
+            torch.cuda.manual_seed_all(params.seed)
 
     # build environment / modules / trainer / evaluator
     env = build_env(params)

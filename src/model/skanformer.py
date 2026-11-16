@@ -274,9 +274,12 @@ class TransformerLayer(nn.Module):
                 normalized_attention=params.norm_attention,
             )
         if self.is_decoder and self.is_last and params.sinekan:
+            # build on CPU: `phase` is a registered buffer, so it follows the
+            # module when build_modules() calls .cuda() (also allows --cpu true)
             self.ffn = SineKANLayer(
                 self.dim,
                 self.dim,
+                device="cpu",
             )
         else:
             self.ffn = TransformerFFN(

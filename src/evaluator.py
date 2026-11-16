@@ -100,8 +100,10 @@ class Evaluator(object):
         data_type_list = ["valid"]
         if params.eval_data != '':
             l = len(params.eval_data.split(','))
-            for i in range(l):
-                data_type_list.append("test"+(str(i+1) if i>0 else ""))
+            # eval file 0 -> "valid", files 1.. -> "test", "test2", ...
+            # (matches create_test_iterator; previously one file too many was requested)
+            for i in range(1, l):
+                data_type_list.append("test"+(str(i) if i>1 else ""))
 
         with torch.no_grad():
             for data_type in data_type_list:

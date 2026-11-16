@@ -83,7 +83,8 @@ class EnvDataset(Dataset):
         # (default of 10000 if no file provided)
         if self.train:
             self.size = 1 << 60
-        elif size is None:
+        elif size is None or size <= 0:
+            # --eval_size -1: evaluate on the whole eval file
             self.size = 10000 if path is None else len(self.data)
         else:
             assert size > 0

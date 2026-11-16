@@ -100,6 +100,10 @@ class ArithmeticEnvironment(object):
                 self.output_encoder = encoders.NumberArray(params, 2, 'V', tensor_dim )
             elif self.operation in ["fraction_round", "gcd", "fraction_determinant","modular_add","modular_mul","elliptic"]:
                 self.output_encoder = encoders.PositionalInts(params.base)
+            elif self.operation == "data":
+                # small symbolic outputs read from file (e.g. elliptic curve ranks 0..4).
+                # SymbolicInts(0, 1) made any label >= 2 undecodable (crash in code_class)
+                self.output_encoder = encoders.SymbolicInts(0, params.max_class)
             else:
                 self.output_encoder = encoders.SymbolicInts(0, 1)
         self.input_encoder = encoders.NumberArray(params, max_dim, 'V', tensor_dim)
